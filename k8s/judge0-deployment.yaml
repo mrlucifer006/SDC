@@ -1,0 +1,102 @@
+# Judge0 Server
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: judge0-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: judge0-server
+  template:
+    metadata:
+      labels:
+        app: judge0-server
+    spec:
+      containers:
+      - name: server
+        image: judge0/judge0:1.13.1
+        command: ["./server"]
+        ports:
+        - containerPort: 2358
+        env:
+        - name: REDIS_PASSWORD
+          value: ""
+        - name: REDIS_HOST
+          value: "redis-service"
+        # In a real setup, connect this to a dedicated postgres db for Judge0
+        # For simplicity, assuming no DB or separate DB for Judge0
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: judge0-service
+spec:
+  selector:
+    app: judge0-server
+  ports:
+    - protocol: TCP
+      port: 2358
+      targetPort: 2358
+---
+# Judge0 Workers (scaled via HPA)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: judge0-worker
+spec:
+  selector:
+    matchLabels:
+      app: judge0-worker
+  template:
+    metadata:
+      labels:
+        app: judge0-worker
+    spec:
+      containers:
+      - name: worker
+        image: judge0/judge0:1.13.1
+        command: ["./worker"]
+        securityContext:
+          privileged: true # Judge0 workers require privileges to run submissions securely via isolate
+        env:
+        - name: REDIS_PASSWORD
+          value: ""
+        - name: REDIS_HOST
+          value: "redis-service"
+        volumeMounts:
+        - name: judge0-sysctl
+          mountPath: /etc/sysctl.d
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "2000m"
+            memory: "2Gi"
+      volumes:
+      - name: judge0-sysctl
+        emptyDir: {}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: judge0-worker-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: judge0-worker
+  minReplicas: 2
+  maxReplicas: 15
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 75
